@@ -182,7 +182,6 @@ while read -r I; do
 done < /tmp/bktemp
 wait
 
-
 ## Script to run 16 bam files at once
 
 #!/bin/bash
@@ -231,34 +230,6 @@ while read -r I; do
 done < /tmp/bktemp
 wait
 
-
-temp dir: /scr2/31360/ samples 31 to 110: just made 16 samples
-temp dir: /scr1/31361/ samples 111 to 190: just made 16 samples
-temp dir: /scr1/31563/ samples 49 to 64 WE01 to WF04
-temp dir: /scr2/31564/ samples 65 to 80 WF05 to WG08
-temp dir: /scr1/31565/ samples 81 to 96 WG09 to WH12
-temp dir: /scr2/31566/ samples 97 to 112 2_WA01 to 2_WB04
-temp dir: /scr1/31693/ samples 113 to 128 2_WB05 to 2_WC08
-temp dir: /scr2/31694/ samples 129 to 144 2_WC09 to 2_WD12
-temp dir: /scr2/31710/ samples 145 to 160 2_WE01 to 2_WF04
-temp dir: /scr1/31711/ samples 161 to 176 2_WF05 to 2_WG08
-temp dir: /scr2/31712/ samples 177 to 192 2_WG09 to 2_WH12
-temp dir: /scr1/31713/ samples 193 to 208 3_WA01 to 3_WB04
-temp dir: /scr2/31728/ samples 209 to 224 3_WB05 to 3_WC08
-temp dir: /scr1/31729/ samples 225 to 240 3_WC09 to 3_WD12
-temp dir: /scr2/31756/ samples 241 to 256 3_WE01 to 3_WF04
-temp dir: /scr1/31757/ samples 257 to 272 3_WF05 to 3_WG09
-temp dir: /scr2/31792/ samples 273 to 288 3_WG10 to 4_WA01
-temp dir: /scr1/31793/ samples 289 to 304 4_WA02 to 4_WB05
-temp dir: /scr2/31804/ samples 305 to 329 4_WB06 to 4_WD06
-temp dir: /scr2/31806/ samples 330 to 354 4_WD07 to 4_WF07 
-temp dir: /scr2/31808/ samples 355 to 379 4_WF08 to 4_WH08
-temp dir: /scr1/31809/ samples 379 to 403 4_WH08 to 5_WB09
-temp dir: /scr2/31818/ samples 404 to 428 5_WB10 to 5_WD10
-temp dir: /scr1/31835/ samples 429 to 458 5_WD11 to 5_WG05
-temp dir: /scr2/31838/ samples 459 to 489 5_WG06 to 6_WA11
-temp dir: /scr1/31895/ samples 490 to 495 6_WA12 to 6_WB08
-
 ## Run HaplotypeCaller of GATK4 pipeline for second set of capture-seq samples
 ## Script gatk.sh:
  
@@ -292,17 +263,6 @@ scp /scrfs/storage/easilvac/home/reference_genome/${R1F}* ${SCRDIR}/
 export REFERENCE="${SCRDIR}/Hillquist_genome_v1_purged_primary_contigs_HiC.fasta"
 export BAM="/home/easilvac/blackberry_captureseq/mapping"
 seq 1 30 | parallel -j 15 ./gatk.sh "{}"
-
-temp dir: /scr1/32151/ samples 1 to 30 1_WA01 to 1_WC06
-temp dir: /scr2/32152/ samples 31 to  60 1_WC07 to 1_WE12
-temp dir: /scr1/32153/ samples 61 to 90 1_WF01 to 1_WH06
-temp dir: /scr2/32238/ samples 91 to 120 1_WF07 to 2_WB12
-temp dir: /scr2/32364/ samples 121 to 149 2_WC01 to 2_WE06
-temp dir: /scr1/32487/ samples 150 to 179 2_WE07 to 2_WG11
-temp dir: /scr2/32674/ samples 180 to 209 2_WG12 to 3_WB05
-temp dir: /scr1/32675/ samples 210 to 239 3_WB06 to 3_WD11
-temp dir: /scr2/32676/ samples 240 to 248 3_WD12 to 3_WE08
-temp dir: /scr2/755900/ sample ARK_133901_P006_WA01
 
 ################################################
 ## Create a genomicDatabase for each Chr
@@ -359,8 +319,6 @@ gatk --java-options "-Xmx8g -XX:ParallelGCThreads=2" GenotypeGVCFs \
    -O blackberry_captureseq_allsamples_gatk_v2.vcf.gz \
    --standard-min-confidence-threshold-for-calling 30
 
-
-
 #!/bin/bash
 #SBATCH --job-name=genotypeGVCFs
 #SBATCH --output=GenotypeGVCFs_%j.txt
@@ -410,7 +368,6 @@ module load java/sunjdk_17.0.8 gatk/4.4.0.0
   -O blackberry_captureseq_allsamples_gatk.vcf.gz
  
 ####################################
-## Jul/01/2025
 ## Convert missing data from 0/0/0/0 to ./././. format of the VCF created using GATK
 ## This code was taken from Dr. Kieran Samuk
 
@@ -618,5 +575,6 @@ java -Xmx32g -jar /home/easilvac/NGSEP/NGSEPcore_5.1.0.jar VCFFilter -srs ~/blac
 srun --nodes=1 --ntasks-per-node=1 --cpus-per-task=2 --partition cloud72 --time=72:00:00 --pty /bin/bash
 
 module load samtools/1.15.1
+
 
 bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%INFO/TA\t%INFO/TID\n' blackberry_captureseq_ARKsamples_gatk_onlySNV_miss0.6_minDP3_minMAF0.05_minQ30_SNPsFreebayes_annotNGSEP_updog_filtered.vcf > blackberry_captureseq_ARKsamples_gatk_onlySNV_miss0.6_minDP3_minMAF0.05_minQ30_SNPsFreebayes_annotNGSEP_updog_filtered.txt &
