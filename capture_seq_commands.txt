@@ -1,0 +1,622 @@
+## Mapping reads script
+
+#!/bin/bash
+#SBATCH --job-name=bwa_mem
+#SBATCH --output=bwa_mem_output_%j.txt
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=32
+#SBATCH --time=3-00:00:00
+#SBATCH --partition comp72
+#SBATCH --qos comp
+
+module load bwa/0.7.17
+module load samtools/1.15.1
+
+export OMP_NUM_THREADS=32
+
+FASTQ=/home/easilvac/blackberry_captureseq/fastq_2025
+MAPPING=/home/easilvac/blackberry_captureseq/mapping
+REFERENCE=/home/easilvac/blackberry_resequencing_data/reference/Hillquist_genome_v1_purged_primary_contigs_HiC.fasta;
+
+cd $SLURM_SUBMIT_DIR
+
+for i in $(cat "$MAPPING/reads_key_set2")
+do   
+    RG="@RG\tID:${i}\tSM:${i}\tPL:ILLUMINA\tLB:lib_${i}\tPU:unit_${i}"
+
+    bwa mem -t 32 -R "$RG" "$REFERENCE" "$FASTQ/${i}_R1_001.fastq.gz" "$FASTQ/${i}_R2_001.fastq.gz" > "$MAPPING/${i}_bwa.sam"
+
+    samtools view -@32 -bS "$MAPPING/${i}_bwa.sam" | \
+    samtools sort -l 9 -@32 -o "$MAPPING/${i}_bwa.bam"
+
+    rm "$MAPPING/${i}_bwa.sam"
+done
+
+########################################################################################
+## Provide summary information about the SAM flags of the alignments. This is a great utility to assess how many reads mapped, how many didn’t, and the nature of their mapping
+
+srun --nodes=1 --ntasks-per-node=1  --cpus-per-task=2 --partition comp01 --qos comp --time=1:00:00 --pty /bin/bash
+
+module load samtools/1.15.1
+
+samtools flagstats RAPiD-Genomic_F170_ARK_133901_P001_WA01-i5-534-i7-97_S1_L004_bwa.bam
+samtools flagstats RAPiD-Genomic_F170_ARK_133901_P001_WB01-i5-534-i7-109_S13_L004_bwa.bam
+
+###################################################################################
+## Mark duplicates
+
+#!/bin/bash
+#SBATCH --job-name=picard
+#SBATCH --output=picard_output_%j.txt
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=32
+#SBATCH --time=3-00:00:00
+#SBATCH --partition comp72
+#SBATCH --qos comp
+
+module purge
+module load java/sunjdk_17.0.8 fastqc/0.12.1 picard-tools/2.17.10
+module load samtools/1.15.1
+
+export OMP_NUM_THREADS=32
+
+BAM=/home/easilvac/blackberry_captureseq/mapping
+
+for i in $(cat "$BAM/reads_key_set2")
+do
+    java -jar ~/picard/build/libs/picard.jar MarkDuplicates \
+        -I "$BAM/${i}_bwa.bam" \
+        -O "$BAM/${i}_bwa_dup.bam" \
+        -M "duplicate_metrics/${i}_marked_dup_metrics.txt"
+
+    samtools index -@ 8 "$BAM/${i}"
+done
+
+
+###################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&##################################
+## Variant calling using GATK4 pipeline
+## Run HaplotypeCaller of GATK4 pipeline
+
+#!/bin/bash
+#SBATCH --job-name=HaplotypeCaller
+#SBATCH --output=HaplotypeCaller_output_%j.txt
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --time=72:00:00
+#SBATCH --cpus-per-task=8
+#SBATCH --partition comp72
+#SBATCH --qos comp
+
+module load java/sunjdk_17.0.8 gatk/4.4.0.0
+export OMP_NUM_THREADS=8
+
+BAM=/home/easilvac/blackberry_captureseq/mapping
+GENOTYPING=/scratch/$SLURM_JOB_ID/
+REFERENCE=/home/easilvac/reference_genome/Hillquist_genome_v1_purged_primary_contigs_HiC.fasta
+cd $SLURM_SUBMIT_DIR
+
+for i in $(cat "$BAM/bam_key1")
+do
+	gatk --java-options "-Xmx40g -XX:ParallelGCThreads=8" HaplotypeCaller -ploidy 2 --min-base-quality-score 20 -R "$REFERENCE" -I "$BAM/${i}"_bwa_dup.bam -O "$GENOTYPING${i}"_gatk.g.vcf.gz -ERC GVCF --tmp-dir /scratch/$SLURM_JOB_ID/ --native-pair-hmm-threads 8
+done
+
+###################################################
+### Script made by David Chaffin
+
+#!/bin/bash
+#SBATCH --job-name=HaplotypeCaller
+#SBATCH --output=HaplotypeCaller_output_%j.txt
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=32
+#SBATCH --time=72:00:00
+#SBATCH --partition comp72
+#SBATCH --qos comp
+module load java/sunjdk_17.0.8 gatk/4.6.1.0 gcc/12.2.1 python/miniforge-24.3.0
+conda activate gatk-4.6.1.0-24.3.0-el9
+#REF
+#cp /scrfs/storage/easilvac/home/reference_genome/Hillquist_genome_v1_purged_primary_contigs_HiC.* /scratch/$SLURM_JOB_ID/
+export BAM=/home/easilvac/blackberry_captureseq/mapping
+export GENOTYPING=/scratch/$SLURM_JOB_ID/
+export REFERENCE=/scratch/$SLURM_JOB_ID/Hillquist_genome_v1_purged_primary_contigs_HiC.fasta
+#this is the third group of 16 hence head -48
+head -16 $BAM/bam_keyWGS | tail -8 >/tmp/bktemp
+echo "/tmp/bktemp"
+cat /tmp/bktemp
+for ((J = 1; J < 9; ++J)); do
+I=`head -$J /tmp/bktemp | tail -1`
+echo "gatk J=${J} I=${I}"
+mkdir -p  /local_scratch/$SLURM_JOB_ID/${J}
+srun --cpus-per-task=4 gatk --java-options "-Xmx23g -XX:ParallelGCThreads=4" HaplotypeCaller -ploidy 2 --min-base-quality-score 20 -R "$REFERENCE" -I "$BAM/${I}"_bwa_dup.bam -O "$GENOTYPING${I}"_gatk.g.vcf.gz -ERC GVCF --native-pair-hmm-threads 4 --tmp-dir /local_scratch/$SLURM_JOB_ID/${J} &
+done
+wait
+
+### Modified version:
+
+#!/bin/bash
+#SBATCH --job-name=HaplotypeCaller
+#SBATCH --output=HaplotypeCaller_output_%j.txt
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=32
+#SBATCH --time=72:00:00
+#SBATCH --partition comp72
+#SBATCH --qos comp
+
+# Load modules
+module purge
+module load java/sunjdk_17.0.8 gatk/4.6.1.0 gcc/12.2.1 python/miniforge-24.3.0
+
+conda activate gatk-4.6.1.0-24.3.0-el9
+
+export BAM=/home/easilvac/blackberry_captureseq/mapping
+export GENOTYPING=/scratch/$SLURM_JOB_ID/genotyping
+export REFERENCE=/scratch/$SLURM_JOB_ID/Hillquist_genome_v1_purged_primary_contigs_HiC.fasta
+
+mkdir -p "$GENOTYPING"
+
+cp /scrfs/storage/easilvac/home/reference_genome/Hillquist_genome_v1_purged_primary_contigs_HiC.* /scratch/$SLURM_JOB_ID/
+
+head -16 "$BAM/bam_keyWGS" | tail -8 > /tmp/bktemp
+
+echo "Sample list saved to /tmp/bktemp:"
+cat /tmp/bktemp
+J=0
+while read -r I; do
+    ((J++))
+    echo "Launching GATK HaplotypeCaller for sample ${I} (J=${J})"
+
+    mkdir -p /local_scratch/$SLURM_JOB_ID/${J}
+
+    srun --export=ALL --cpus-per-task=4 gatk --java-options "-Xmx23g -XX:ParallelGCThreads=4" HaplotypeCaller \
+        -ploidy 2 \
+        --min-base-quality-score 20 \
+        -R "$REFERENCE" \
+        -I "$BAM/${I}_bwa_dup.bam" \
+        -O "$GENOTYPING/${I}_gatk.g.vcf.gz" \
+        -ERC GVCF \
+        --native-pair-hmm-threads 4 \
+        --tmp-dir /local_scratch/$SLURM_JOB_ID/${J} &
+done < /tmp/bktemp
+wait
+
+
+## Script to run 16 bam files at once
+
+#!/bin/bash
+#SBATCH --job-name=HaplotypeCaller
+#SBATCH --output=HaplotypeCaller_output_%j.txt
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=64
+#SBATCH --time=72:00:00
+#SBATCH --partition comp64
+
+# Load modules
+module purge
+module load java/sunjdk_17.0.8 gatk/4.6.1.0 gcc/12.2.1 python/miniforge-24.3.0
+
+conda activate gatk-4.6.1.0-24.3.0-el9
+
+export BAM=/home/easilvac/blackberry_captureseq/mapping
+export GENOTYPING=/scratch/$SLURM_JOB_ID/genotyping
+export REFERENCE=/scratch/$SLURM_JOB_ID/Hillquist_genome_v1_purged_primary_contigs_HiC.fasta
+
+mkdir -p "$GENOTYPING"
+
+cp /scrfs/storage/easilvac/home/reference_genome/Hillquist_genome_v1_purged_primary_contigs_HiC.* /scratch/$SLURM_JOB_ID/
+
+head -32 "$BAM/bam_key" | tail -16 > /tmp/bktemp
+
+echo "Sample list saved to /tmp/bktemp:"
+cat /tmp/bktemp
+J=0
+while read -r I; do
+    ((J++))
+    echo "Launching GATK HaplotypeCaller for sample ${I} (J=${J})"
+
+    mkdir -p /local_scratch/$SLURM_JOB_ID/${J}
+
+    srun --export=ALL --cpus-per-task=4 gatk --java-options "-Xmx32g -XX:ParallelGCThreads=4" HaplotypeCaller \
+        -ploidy 2 \
+        --min-base-quality-score 20 \
+        -R "$REFERENCE" \
+        -I "$BAM/${I}_bwa_dup.bam" \
+        -O "$GENOTYPING/${I}_gatk.g.vcf.gz" \
+        -ERC GVCF \
+        --native-pair-hmm-threads 4 \
+        --tmp-dir /local_scratch/$SLURM_JOB_ID/${J} &
+done < /tmp/bktemp
+wait
+
+
+temp dir: /scr2/31360/ samples 31 to 110: just made 16 samples
+temp dir: /scr1/31361/ samples 111 to 190: just made 16 samples
+temp dir: /scr1/31563/ samples 49 to 64 WE01 to WF04
+temp dir: /scr2/31564/ samples 65 to 80 WF05 to WG08
+temp dir: /scr1/31565/ samples 81 to 96 WG09 to WH12
+temp dir: /scr2/31566/ samples 97 to 112 2_WA01 to 2_WB04
+temp dir: /scr1/31693/ samples 113 to 128 2_WB05 to 2_WC08
+temp dir: /scr2/31694/ samples 129 to 144 2_WC09 to 2_WD12
+temp dir: /scr2/31710/ samples 145 to 160 2_WE01 to 2_WF04
+temp dir: /scr1/31711/ samples 161 to 176 2_WF05 to 2_WG08
+temp dir: /scr2/31712/ samples 177 to 192 2_WG09 to 2_WH12
+temp dir: /scr1/31713/ samples 193 to 208 3_WA01 to 3_WB04
+temp dir: /scr2/31728/ samples 209 to 224 3_WB05 to 3_WC08
+temp dir: /scr1/31729/ samples 225 to 240 3_WC09 to 3_WD12
+temp dir: /scr2/31756/ samples 241 to 256 3_WE01 to 3_WF04
+temp dir: /scr1/31757/ samples 257 to 272 3_WF05 to 3_WG09
+temp dir: /scr2/31792/ samples 273 to 288 3_WG10 to 4_WA01
+temp dir: /scr1/31793/ samples 289 to 304 4_WA02 to 4_WB05
+temp dir: /scr2/31804/ samples 305 to 329 4_WB06 to 4_WD06
+temp dir: /scr2/31806/ samples 330 to 354 4_WD07 to 4_WF07 
+temp dir: /scr2/31808/ samples 355 to 379 4_WF08 to 4_WH08
+temp dir: /scr1/31809/ samples 379 to 403 4_WH08 to 5_WB09
+temp dir: /scr2/31818/ samples 404 to 428 5_WB10 to 5_WD10
+temp dir: /scr1/31835/ samples 429 to 458 5_WD11 to 5_WG05
+temp dir: /scr2/31838/ samples 459 to 489 5_WG06 to 6_WA11
+temp dir: /scr1/31895/ samples 490 to 495 6_WA12 to 6_WB08
+
+## Run HaplotypeCaller of GATK4 pipeline for second set of capture-seq samples
+## Script gatk.sh:
+ 
+#!/bin/bash
+J=$1
+/bin/rm -f done.$J
+echo "${I}" >>strt.$J
+I=`head -$J $BAM/bam_key | tail -1`
+mkdir -p  $LSCDIR/${J}
+echo "${I} start" >>donelist
+gatk --java-options "-Xmx32g -XX:ParallelGCThreads=1" HaplotypeCaller -ploidy 2 --min-base-quality-score 20 -R "$REFERENCE" -I "$BAM/${I}"_bwa_dup.bam -O "$GENOTYPING${I}"_gatk.g.vcf.gz -ERC
+ GVCF --native-pair-hmm-threads 4 --tmp-dir $LSCDIR/${J}
+echo "${I}" >>done.$J
+
+## Script parallel.sh:
+
+#!/bin/bash
+#SBATCH --job-name=HaplotypeCaller
+#SBATCH --output=HaplotypeCaller_output_%j.txt
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=64
+#SBATCH --time=72:00:00
+#SBATCH --partition agpu
+export SCRDIR=/scratch/$SLURM_JOB_ID/
+export LSCDIR=/local_scratch/$SLURM_JOB_ID/
+module load java/sunjdk_17.0.8 gatk/4.6.1.0 gcc/12.2.1
+export GENOTYPING="$SCRDIR"
+export R1F=Hillquist_genome_v1_purged_primary_contigs_HiC
+scp /scrfs/storage/easilvac/home/reference_genome/${R1F}* ${SCRDIR}/
+export REFERENCE="${SCRDIR}/Hillquist_genome_v1_purged_primary_contigs_HiC.fasta"
+export BAM="/home/easilvac/blackberry_captureseq/mapping"
+seq 1 30 | parallel -j 15 ./gatk.sh "{}"
+
+temp dir: /scr1/32151/ samples 1 to 30 1_WA01 to 1_WC06
+temp dir: /scr2/32152/ samples 31 to  60 1_WC07 to 1_WE12
+temp dir: /scr1/32153/ samples 61 to 90 1_WF01 to 1_WH06
+temp dir: /scr2/32238/ samples 91 to 120 1_WF07 to 2_WB12
+temp dir: /scr2/32364/ samples 121 to 149 2_WC01 to 2_WE06
+temp dir: /scr1/32487/ samples 150 to 179 2_WE07 to 2_WG11
+temp dir: /scr2/32674/ samples 180 to 209 2_WG12 to 3_WB05
+temp dir: /scr1/32675/ samples 210 to 239 3_WB06 to 3_WD11
+temp dir: /scr2/32676/ samples 240 to 248 3_WD12 to 3_WE08
+temp dir: /scr2/755900/ sample ARK_133901_P006_WA01
+
+################################################
+## Create a genomicDatabase for each Chr
+## run GenomicsDBImport for the samples with WGS data 
+
+#!/bin/bash
+#SBATCH --job-name=GenomicsDBImport
+#SBATCH --output=GenomicsDBImport_output_%j.txt
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=2
+#SBATCH --time=06:00:00
+#SBATCH --partition comp06
+#SBATCH --qos comp
+
+module purge
+module load java/sunjdk_17.0.8 gatk/4.4.0.0
+
+export OMP_NUM_THREADS=2
+cd $SLURM_SUBMIT_DIR
+
+gatk --java-options "-Xmx8g -XX:ParallelGCThreads=2" \
+       GenomicsDBImport \
+       --genomicsdb-workspace-path GDatabase \
+	   --reader-threads 2 \
+       --genomicsdb-shared-posixfs-optimizations \
+       -L chromosome2.list \
+       --sample-name-map sample_map \
+       --tmp-dir /scratch/$SLURM_JOB_ID/
+
+
+########################################################################
+##Make a VCF file using GenotypeGVCFs
+
+#!/bin/bash
+#SBATCH --job-name=genotypeGVCFs
+#SBATCH --output=GenotypeGVCFs_%j.txt
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=7
+#SBATCH --cpus-per-task=2
+#SBATCH --time=72:00:00
+#SBATCH --partition cloud72
+#SBATCH --qos cloud
+
+module purge
+module load java/sunjdk_17.0.8 gatk/4.6.1.0 gcc/12.2.1
+
+export OMP_NUM_THREADS=2
+cd $SLURM_SUBMIT_DIR
+
+gatk --java-options "-Xmx8g -XX:ParallelGCThreads=2" GenotypeGVCFs \
+   -R ~/reference_genome/Hillquist_genome_v1_purged_primary_contigs_HiC.fasta \
+   -V gendb://GDatabase \
+   -O blackberry_captureseq_allsamples_gatk_v2.vcf.gz \
+   --standard-min-confidence-threshold-for-calling 30
+
+
+
+#!/bin/bash
+#SBATCH --job-name=genotypeGVCFs
+#SBATCH --output=GenotypeGVCFs_%j.txt
+#SBATCH --nodes=1
+#SBATCH --array=1-7
+#SBATCH --cpus-per-task=2
+#SBATCH --time=72:00:00
+#SBATCH --partition comp72
+#SBATCH --qos comp
+
+module purge
+module load java/sunjdk_17.0.8 gatk/4.4.0.0
+
+export OMP_NUM_THREADS=2
+cd $SLURM_SUBMIT_DIR
+
+CHROMS=(Ra01 Ra02 Ra03 Ra04 Ra05 Ra06 Ra07)
+CHR=${CHROMS[$SLURM_ARRAY_TASK_ID-1]}
+
+if [ -z "$CHR" ]; then
+  echo "Error: Chromosome variable is empty for SLURM_ARRAY_TASK_ID=$SLURM_ARRAY_TASK_ID"
+  exit 1
+fi
+
+echo "Processing chromosome: $CHR"
+
+gatk --java-options "-Xmx8g" GenotypeGVCFs \
+   -R ~/reference_genome/Hillquist_genome_v1_purged_primary_contigs_HiC.fasta \
+   -V gendb://GDatabase \
+   -O blackberry_captureseq_allsamples_gatk_${CHR}.vcf.gz \
+   --standard-min-confidence-threshold-for-calling 30 \
+   -L $CHR
+   
+#Merge VCFs
+
+srun --nodes=1 --ntasks-per-node=1 --cpus-per-task=2 --partition cloud72 --time=6:00:00 --pty /bin/bash
+
+module load java/sunjdk_17.0.8 gatk/4.4.0.0   
+   gatk MergeVcfs \
+  -I blackberry_captureseq_allsamples_gatk_Ra01.vcf.gz \
+  -I blackberry_captureseq_allsamples_gatk_Ra02.vcf.gz \
+  -I blackberry_captureseq_allsamples_gatk_Ra03.vcf.gz \
+  -I blackberry_captureseq_allsamples_gatk_Ra04.vcf.gz \
+  -I blackberry_captureseq_allsamples_gatk_Ra05.vcf.gz \
+  -I blackberry_captureseq_allsamples_gatk_Ra06.vcf.gz \
+  -I blackberry_captureseq_allsamples_gatk_Ra07.vcf.gz \
+  -O blackberry_captureseq_allsamples_gatk.vcf.gz
+ 
+####################################
+## Jul/01/2025
+## Convert missing data from 0/0/0/0 to ./././. format of the VCF created using GATK
+## This code was taken from Dr. Kieran Samuk
+
+module load samtools/1.15.1
+
+bcftools +setGT blackberry_captureseq_allsamples_gatk.vcf.gz -- -t q -n . -e 'FMT/DP>=1' > blackberry_captureseq_allsamples_gatk_nofiltered.vcf.gz
+
+## Results:  variants
+
+## Compress VCF file got from NGSEP
+
+#!/bin/bash
+#SBATCH --job-name=VCFFilter
+#SBATCH --output=VCFFilter_%j.txt
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=2
+#SBATCH --time=72:00:00
+#SBATCH --partition cloud72
+#SBATCH --qos cloud
+
+module load samtools/1.15.1
+export SCRDIR=/scratch/$SLURM_JOB_ID/
+bgzip -c blackberry_captureseq_allsamples_gatk_nofiltered.vcf > "$SCRDIR"blackberry_captureseq_allsamples_gatk_nofiltered.vcf.gz
+tabix -p vcf "$SCRDIR"blackberry_captureseq_allsamples_gatk_nofiltered.vcf.gz &
+
+## VCF Filter - Filter out samples no from the UARK Breeding program (PBB and ORUS/OR), only SNV and remove no longer polymorphism sites
+
+#!/bin/bash
+#SBATCH --job-name=VCFFilter
+#SBATCH --output=VCFFilter_%j.txt
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=2
+#SBATCH --time=72:00:00
+#SBATCH --partition cloud72
+#SBATCH --qos cloud
+
+module load java/openjdk_11.0.10
+
+export SCRDIR=/scratch/$SLURM_JOB_ID/
+
+java -Xmx16g -jar /home/easilvac/NGSEP/NGSEPcore_4.1.0.jar VCFFilter -i blackberry_captureseq_allsamples_gatk_nofiltered.vcf -o "$SCRDIR"blackberry_captureseq_ARKsamples_gatk.vcf -saf ARK_samples.txt
+
+#temp dir: /scr2/818802/
+
+## Time was not enough to complete the task, so, I will send another job but only for the regions that was not processed in the first run:
+## Genomic regions still need to filter:
+Ra05    17944778	38624057
+Ra06	1	45459684
+Ra07	1	37018114
+
+java -Xmx32g -jar /home/easilvac/NGSEP/NGSEPcore_4.1.0.jar VCFFilter -i blackberry_captureseq_allsamples_gatk_nofiltered.vcf -o "$SCRDIR"blackberry_captureseq_ARKsamples_gatk_second.vcf -saf ARK_samples.txt -srs regions_for_filtering
+
+#temp dir: /scr1/823959/
+
+
+### Filter for Only SNVs, biallelic SNPs and polimorphic in the set of samples that has been selected:
+## Other filters included: min samples = 375, minDP = 3, minMAF = 0.05, min GQ = 30
+
+#!/bin/bash
+#SBATCH --job-name=VCFFilter
+#SBATCH --output=VCFFilter_%j.txt
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=2
+#SBATCH --time=72:00:00
+#SBATCH --partition cloud72
+#SBATCH --qos cloud
+
+module load java/sunjdk_24.0.1
+
+export SCRDIR=/scratch/$SLURM_JOB_ID/
+
+java -Xmx32g -jar /home/easilvac/NGSEP/NGSEPcore_5.1.0.jar VCFFilter -s -fi -m 375 -minRD 3 -minMAF 0.05 -q 30 -i blackberry_captureseq_ARKsamples_gatk.vcf -o "$SCRDIR"blackberry_captureseq_ARKsamples_gatk_onlySNV_miss0.6_minDP3_minMAF0.05_minQ30.vcf
+
+#Results: 300920 variants
+
+java -Xmx32g -jar /home/easilvac/NGSEP/NGSEPcore_5.1.0.jar VCFFilter -s -fi -m 375 -minRD 3 -minMAF 0.05 -q 30 -i blackberry_captureseq_ARKsamples_gatk_second.vcf -o "$SCRDIR"blackberry_captureseq_ARKsamples_gatk_second_onlySNV_miss0.6_minDP3_minMAF0.05_minQ30.vcf
+
+#temp dir: 199696 variants
+
+#Merge VCFs
+
+#!/bin/bash
+#SBATCH --job-name=VCFFilter
+#SBATCH --output=VCFFilter_%j.txt
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=2
+#SBATCH --time=72:00:00
+#SBATCH --partition cloud72
+#SBATCH --qos cloud
+
+export SCRDIR=/scratch/$SLURM_JOB_ID/
+module load java/sunjdk_17.0.8 gatk/4.4.0.0   
+   gatk MergeVcfs \
+  -I blackberry_captureseq_ARKsamples_gatk_onlySNV_miss0.6_minDP3_minMAF0.05_minQ30.vcf \
+  -I blackberry_captureseq_ARKsamples_gatk_second_onlySNV_miss0.6_minDP3_minMAF0.05_minQ30.vcf \
+  -O "$SCRDIR"blackberry_captureseq_ARKsamples_gatk_onlySNV_miss0.6_minDP3_minMAF0.05_minQ30_complete.vcf
+
+#Results: 500616 variants
+
+## Filter out SNPs with more than 20% missing data
+
+#!/bin/bash
+#SBATCH --job-name=VCFFilter
+#SBATCH --output=VCFFilter_%j.txt
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=2
+#SBATCH --time=72:00:00
+#SBATCH --partition cloud72
+#SBATCH --qos cloud
+
+module load java/sunjdk_24.0.1
+
+export SCRDIR=/scratch/$SLURM_JOB_ID/
+
+java -Xmx32g -jar /home/easilvac/NGSEP/NGSEPcore_5.1.0.jar VCFFilter -s -fi -m 500 -minRD 3 -minMAF 0.05 -q 30 -i blackberry_captureseq_ARKsamples_gatk_onlySNV_miss0.6_minDP3_minMAF0.05_minQ30_complete.vcf -o "$SCRDIR"blackberry_captureseq_ARKsamples_gatk_onlySNV_miss0.8_minDP3_minMAF0.05_minQ30.vcf
+
+#Results: 364050 variants
+
+##Extract Chromosome and position for SNPs from VCF obtained using Freebayes (142235 variants):
+
+#!/bin/bash
+#SBATCH --job-name=VCFFilter
+#SBATCH --output=VCFFilter_%j.txt
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=2
+#SBATCH --time=72:00:00
+#SBATCH --partition cloud72
+#SBATCH --qos cloud
+
+module load samtools/1.15.1
+
+bcftools query -f '%CHROM\t%POS\n' /home/easilvac/blackberry_captureseq/vcf_2025/FiltStep1_minQ10.0_minDP3_DPrange15-maxMeanDepth750_miss0.4_maf0.01_mac1_ARK_133903_SNPs_renamed.vcf.gz > chrom_pos_ARK_133903_SNPs.txt
+
+### Select SNPs detected with Freebayes from VCF obtained with GATK
+## directory: /home/easilvac/updog
+#!/bin/bash
+#SBATCH --job-name=VCFFilter
+#SBATCH --output=VCFFilter_%j.txt
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=2
+#SBATCH --time=72:00:00
+#SBATCH --partition cloud72
+#SBATCH --qos cloud
+
+module load java/sunjdk_24.0.1
+
+export SCRDIR=/scratch/$SLURM_JOB_ID/
+
+java -Xmx32g -jar /home/easilvac/NGSEP/NGSEPcore_5.1.0.jar VCFFilter -srs chrom_pos_ARK_133903_SNPs.txt -i blackberry_captureseq_ARKsamples_gatk_onlySNV_miss0.6_minDP3_minMAF0.05_minQ30_complete.vcf -o "$SCRDIR"blackberry_captureseq_ARKsamples_gatk_onlySNV_miss0.6_minDP3_minMAF0.05_minQ30_SNPsFreebayes.vcf
+
+##Results: 98538 variants
+
+
+## Sept/29/2025
+## I applied an additional filter using the software updog to filter out SNPs with more than 5% estimated sequencing error rate. Using this filter, 69747 SNP markers were selected.
+## Now, I will use NGSEP to annotate the previously generated VCF and then make a new VCF for the 69747 SNP markers only.
+## directory: /scrfs/storage/easilvac/blackberry_captureseq/vcf_2025
+
+## Annotation of the VCF
+
+#!/bin/bash
+#SBATCH --job-name=NGSEP
+#SBATCH --output=NGSEP_annotation.slurm
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=2
+#SBATCH --time=72:00:00
+#SBATCH --partition cloud72
+
+cd $SLURM_SUBMIT_DIR
+
+module load java/openjdk_11.0.10
+java -Xmx8g -jar ~/NGSEP/NGSEPcore_4.1.0.jar VCFAnnotate -i blackberry_captureseq_ARKsamples_gatk_onlySNV_miss0.6_minDP3_minMAF0.05_minQ30_SNPsFreebayes.vcf.gz -r ~/reference_genome/Hillquist_genome_v1_purged_primary_contigs_HiC.fasta -t ~/reference_genome/Rargutus.v1.2.finalized/Rargutusv1.2.gene_exons.gff3 -o blackberry_captureseq_ARKsamples_gatk_onlySNV_miss0.6_minDP3_minMAF0.05_minQ30_SNPsFreebayes_annotNGSEP.vcf
+
+
+## Filter VCF
+
+#!/bin/bash
+#SBATCH --job-name=VCFFilter
+#SBATCH --output=VCFFilter_%j.txt
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=2
+#SBATCH --time=72:00:00
+#SBATCH --partition cloud72
+#SBATCH --qos cloud
+
+module load java/sunjdk_24.0.1
+
+export SCRDIR=/scratch/$SLURM_JOB_ID/
+
+java -Xmx32g -jar /home/easilvac/NGSEP/NGSEPcore_5.1.0.jar VCFFilter -srs ~/blackberry_captureseq/genotyping/snp_list_updog.txt -i blackberry_captureseq_ARKsamples_gatk_onlySNV_miss0.6_minDP3_minMAF0.05_minQ30_SNPsFreebayes_annotNGSEP.vcf -o "$SCRDIR"blackberry_captureseq_ARKsamples_gatk_onlySNV_miss0.6_minDP3_minMAF0.05_minQ30_SNPsFreebayes_annotNGSEP_updog_filtered.vcf
+
+##Results: 69747 SNPs
+
+# Extract field TA and TID from a VCF file
+
+srun --nodes=1 --ntasks-per-node=1 --cpus-per-task=2 --partition cloud72 --time=72:00:00 --pty /bin/bash
+
+module load samtools/1.15.1
+
+bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%INFO/TA\t%INFO/TID\n' blackberry_captureseq_ARKsamples_gatk_onlySNV_miss0.6_minDP3_minMAF0.05_minQ30_SNPsFreebayes_annotNGSEP_updog_filtered.vcf > blackberry_captureseq_ARKsamples_gatk_onlySNV_miss0.6_minDP3_minMAF0.05_minQ30_SNPsFreebayes_annotNGSEP_updog_filtered.txt &
